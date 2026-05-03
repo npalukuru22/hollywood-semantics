@@ -1,0 +1,862 @@
+# ============================================================
+# HOLLYWOOD SEMANTICS — SEMANTIC LAYER
+# ============================================================
+
+meta:
+  name: Hollywood Semantics
+  description: >
+    A natural language interface for exploring the greatest
+    Hollywood films of all time. Covers ratings, box office,
+    actors, genres and decades. Built for movie fans with
+    no SQL knowledge.
+  owner: Hollywood Semantics
+  language: English
+
+# ============================================================
+
+dialect:
+  engine: DuckDB
+  notes:
+    - Use standard SQL syntax
+    - Use single quotes for string values e.g. WHERE gender = 'female'
+    - BOOLEAN values are true/false not 1/0
+    - Default LIMIT is 10 if the user does not specify a number
+    - If the user says "top 5" or "show me 8" use that number instead
+    - Never return more than 25 rows even if the user asks for all
+    - Default sort is by imdb_rating DESC unless the user asks otherwise
+    - If the user says "by box office" or "highest grossing" sort by box_office_usd DESC
+    - If the user says "oldest" or "newest" sort by release_year
+    - Format box office in dollars with commas e.g. $1,004,558,444
+    - Round IMDb ratings to 1 decimal place e.g. 9.3 not 9.300000190734863
+    - Show runtime as hours and minutes e.g. 2h 22min not 142
+    - If death_year is NULL say "still alive" not NULL
+    - If box_office_usd is NULL say "box office unknown" not NULL
+    - If the user says "best" assume IMDb rating
+    - If the user says "biggest" or "most successful" assume box office
+    - If the user says "longest" assume runtime
+    - If the user says "recent" means last 10 years
+    - If the user says "classic" means before 1980
+    - If the user says "modern" means after 2000
+    - If the user says "old Hollywood" means before 1960
+    - If the question is too vague ask one clarifying question before writing SQL
+    - Always explain the result in one sentence before showing data like a movie fan talking to another movie fan
+
+# ============================================================
+
+glossary:
+  blockbuster:
+    definition: >
+      A massive commercial hit with huge audience appeal.
+      Originally referred to movies so popular lines wrapped
+      around the block.
+    data_rule: box_office_usd > 500000000
+
+  flop:
+    definition: >
+      A movie that bombed commercially and likely lost money
+      for the studio.
+    data_rule: box_office_usd < 20000000
+
+  critically_acclaimed:
+    definition: >
+      Praised for quality and artistic merit. Not necessarily
+      a box office hit — Shawshank made $16M but is rated 9.3.
+    data_rule: imdb_rating >= 8.5
+
+  cult_classic:
+    definition: >
+      Wasn't a big hit on release but built a devoted fanbase
+      over time. Examples: Fight Club, The Big Lebowski.
+    data_rule: imdb_rating >= 8.0 AND box_office_usd < 50000000
+
+  lead_actor:
+    definition: >
+      The main star of the movie whose name appears first
+      in the credits.
+    data_rule: cast_members.is_lead = true
+
+  golden_era:
+    definition: >
+      Hollywood's classic period considered the height of
+      the studio system.
+    data_rule: release_year BETWEEN 1930 AND 1960
+
+  new_hollywood:
+    definition: >
+      The creative revolution of the 70s — Coppola, Scorsese,
+      Spielberg emerging. A turning point in cinema history.
+    data_rule: release_year BETWEEN 1967 AND 1980
+
+  box_office_king:
+    definition: >
+      The highest grossing movie or actor of a given period.
+    data_rule: ORDER BY box_office_usd DESC LIMIT 1
+
+# ============================================================
+
+tables:
+  movies:
+    role: fact
+    grain: one row per movie
+    description: >
+      The main table. Contains every movie in the database with
+      its title, release year, runtime, IMDb rating and worldwide
+      box office gross. One row = one film. Does not contain
+      actor or genre information — those live in separate tables.
+    primary_key: movie_id
+    columns:
+      movie_id:
+        description: Internal IMDb code e.g. tt0111161. Never show to users. Used only to join tables together.
+        show_to_user: false
+      title:
+        description: The popular English title of the movie. Always show this to users.
+        show_to_user: true
+      original_title:
+        description: Title in the original language. Only differs from title for non-English films.
+        show_to_user: true
+      release_year:
+        description: Year the movie was released. Use for decade filtering and era questions.
+        show_to_user: true
+      runtime_minutes:
+        description: Length of the movie in minutes. Always convert to Xh Ymin format when showing to users.
+        show_to_user: true
+      imdb_rating:
+        description: IMDb score out of 10. Main measure of quality. Always round to 1 decimal. Use when user says "best".
+        show_to_user: true
+      box_office_usd:
+        description: Worldwide box office gross in USD. Always format with $ and commas. Use when user says "biggest".
+        show_to_user: true
+    common_filters:
+      - imdb_rating >= 8.0 for quality focused questions
+      - release_year for decade or era questions
+      - box_office_usd for commercial success questions
+    use_when: Always. This is the core table. Every query starts here.
+
+  actors:
+    role: dimension
+    grain: one row per actor or actress
+    description: >
+      Contains every actor and actress in the database.
+      These are all Hollywood film performers — no TV-only
+      personalities. One row = one person.
+    primary_key: actor_id
+    columns:
+      actor_id:
+        description: Internal IMDb code. Never show to users. Only used to join to cast_members.
+        show_to_user: false
+      full_name:
+        description: Actor's full name as credited in films. Always show to users.
+        show_to_user: true
+      gender:
+        description: male or female. Filter to female only when user says actress or female actress.
+        show_to_user: true
+      birth_year:
+        description: Year the person was born. Use to calculate approximate age at time of a movie.
+        show_to_user: true
+      death_year:
+        description: >
+          Year the person passed away. NULL means still alive — never show NULL.
+          When death_year has a value combine with general knowledge about their legacy.
+          Always handle with warmth and respect.
+        show_to_user: true
+    behavioral_rules:
+      - When user says actress or female actress automatically filter gender = 'female'. No need to ask.
+      - Always add a note that results are Hollywood film performers only not TV.
+      - For deceased actors show death_year from DB plus a brief respectful note from general knowledge.
+      - Never show actor_id to users under any circumstance.
+      - When calculating age at time of a film use release_year - birth_year and always say approximately.
+    common_filters:
+      - gender = 'female' for actress questions
+      - death_year IS NOT NULL for questions about deceased actors
+      - death_year IS NULL for questions about living actors
+    use_when: >
+      When the question is about a specific actor or actress,
+      their career, age, gender, or whether they are still alive.
+
+  genres:
+    role: dimension
+    grain: one row per genre
+    description: >
+      A simple lookup table of 15 movie genres such as Drama,
+      Crime, Action, Sci-Fi, Comedy. Used to label and filter movies by type.
+    primary_key: genre_id
+    columns:
+      genre_id:
+        description: Internal genre number. Never show to users.
+        show_to_user: false
+      name:
+        description: Genre name e.g. Drama, Crime, Action. This is what users see.
+        show_to_user: true
+    use_when: When user asks what genre a movie is or wants to filter by genre.
+
+  movie_genres:
+    role: bridge
+    grain: one row per movie-genre pair. A movie can have up to 3 genres.
+    description: >
+      The invisible connector between movies and genres.
+      Users never see this table directly — it works behind
+      the scenes to answer genre questions.
+    columns:
+      movie_id:
+        description: Links to movies table. Never show to users.
+        show_to_user: false
+      genre_id:
+        description: Links to genres table. Never show to users.
+        show_to_user: false
+    behavioral_rules:
+      - Never show this table's raw data to users.
+      - Only show genre names pulled through from the genres table.
+      - Show primary genre by default. Primary genre is the first genre associated with the movie.
+      - After every response involving genres always offer "Want to see all genres this movie is associated with?"
+      - When user wants a movie list keep it clean — title, year, rating, primary genre only.
+      - Only show all genres when user specifically asks or confirms the prompt.
+    use_when: Only as a bridge to connect movies to genres. Never query this table alone.
+
+  cast_members:
+    role: bridge
+    grain: one row per actor per movie. An actor can appear in multiple movies.
+    description: >
+      Connects actors to the movies they appeared in.
+      Contains the character they played and whether they
+      were a lead or supporting role. Answers "who was in
+      this movie?" and "what movies did this actor appear in?"
+    primary_key: cast_id
+    columns:
+      cast_id:
+        description: Internal row number. Never show to users.
+        show_to_user: false
+      movie_id:
+        description: Links to movies table. Never show to users.
+        show_to_user: false
+      actor_id:
+        description: Links to actors table. Never show to users.
+        show_to_user: false
+      character_name:
+        description: The name of the character the actor played in the movie.
+        show_to_user: true
+      is_lead:
+        description: True if lead starring role. False if supporting. Never show this field directly.
+        show_to_user: false
+    behavioral_rules:
+      - Always show leads first then supporting cast.
+      - Format as "Actor Name — Character Name" e.g. Marlon Brando — Vito Corleone.
+      - Never show cast_id, movie_id or actor_id to users.
+      - Never say is_lead = true to users. Just list leads first naturally.
+      - Always add "Principal cast shown" note — this is not a complete cast list.
+      - When user asks "who starred in X" show only is_lead = true.
+      - When user asks "who was in X" show everyone leads first.
+    use_when: >
+      When the question is about who appeared in a movie,
+      what character someone played, or what movies
+      a specific actor appeared in.
+
+# ============================================================
+
+joins:
+  advisory: >
+    Not all questions can be answered from this database.
+    It contains 50 movies, 82 actors and 15 genres.
+    If a user asks about a movie, actor or detail not present
+    be honest and say "I don't have that information in my
+    current database" and optionally suggest what they could
+    search for online. Never guess or make up data.
+
+  paths:
+    movies_to_cast:
+      left: movies
+      right: cast_members
+      on: movies.movie_id = cast_members.movie_id
+      type: LEFT JOIN
+      purpose: Get the cast of a movie. Use when user asks "who was in X" or "who starred in X."
+
+    cast_to_actors:
+      left: cast_members
+      right: actors
+      on: cast_members.actor_id = actors.actor_id
+      type: LEFT JOIN
+      purpose: Get actor details like full name and gender. Always needed when showing cast.
+
+    movies_to_genres:
+      left: movies
+      right: movie_genres
+      on: movies.movie_id = movie_genres.movie_id
+      type: LEFT JOIN
+      purpose: Get the genres of a movie. Use when user asks "what genre is X" or "show me crime movies."
+
+    genres_to_names:
+      left: movie_genres
+      right: genres
+      on: movie_genres.genre_id = genres.genre_id
+      type: LEFT JOIN
+      purpose: Translate genre_id into a readable genre name. Always needed when showing genres.
+
+  full_path:
+    description: To answer questions involving movies, actors AND genres join all 5 tables in this order.
+    order: movies → cast_members → actors → movie_genres → genres
+    example: |
+      SELECT m.title, a.full_name, g.name
+      FROM movies m
+      LEFT JOIN cast_members cm ON m.movie_id = cm.movie_id
+      LEFT JOIN actors a ON cm.actor_id = a.actor_id
+      LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
+      LEFT JOIN genres g ON mg.genre_id = g.genre_id
+
+# ============================================================
+
+metrics:
+  female_lead_rate:
+    label: Female Lead Rate
+    description: >
+      Percentage of movies in a group that have a female lead actor.
+      A movie counts as female-led when is_lead = true and gender = 'female'.
+    formula: >
+      ROUND(100.0 * COUNT(CASE WHEN a.gender = 'female'
+      AND cm.is_lead = true THEN 1 END) /
+      COUNT(DISTINCT m.movie_id), 1)
+    unit: percentage
+    example: 28% of crime movies have a female lead
+    note: Based only on cast data present in the database. Not a complete picture.
+
+  cult_classic_score:
+    label: Cult Classic Score
+    description: >
+      Identifies movies that are critically loved but were not
+      commercial hits. Matches the glossary definition.
+    formula: imdb_rating >= 8.0 AND box_office_usd < 50000000
+    example: Fight Club, The Big Lebowski, Reservoir Dogs
+    note: Returns true or false per movie. Use in WHERE clause not as aggregation.
+
+  actor_age_at_release:
+    label: Actor Age at Time of Film
+    description: How old an actor was when a movie came out.
+    formula: movies.release_year - actors.birth_year
+    example: Al Pacino was approximately 32 when The Godfather was released
+    note: Approximation based on birth year only. Always say approximately.
+
+# ============================================================
+
+default_filters:
+  valid_rating:
+    description: Only include movies with a valid IMDb rating.
+    sql: movies.imdb_rating IS NOT NULL
+    always_apply: true
+
+  minimum_rating:
+    description: Only show movies rated at least 7.0 by default.
+    sql: movies.imdb_rating >= 7.0
+    always_apply: true
+    override_when: user explicitly asks for lower rated or all movies
+
+  known_box_office:
+    description: When doing financial questions only include movies where box office is known.
+    sql: movies.box_office_usd IS NOT NULL
+    always_apply: true
+    applies_to: box office and financial questions only
+
+  feature_films_only:
+    description: Only show feature length films over 70 minutes.
+    sql: movies.runtime_minutes > 70
+    always_apply: true
+
+  english_title_default:
+    description: Always display the English title by default even for foreign films.
+    always_apply: true
+    default_column: movies.title
+    override_when: user asks for original title or original language
+
+  valid_actor_name:
+    description: Always exclude rows where actor name is missing or NULL.
+    sql: actors.full_name IS NOT NULL
+    always_apply: true
+
+# ============================================================
+
+patterns:
+  best_movies_by_decade:
+    purpose: Show top rated movies from a specific decade or rank all decades by average rating.
+    questions:
+      - Which decade has the best films?
+      - What are the best movies of the 1990s?
+      - 90s vs 2000s which decade had better movies?
+      - Top 10 greatest movies of all time?
+    template: |
+      SELECT CAST((release_year / 10) * 10 AS INTEGER) AS decade,
+             ROUND(AVG(imdb_rating), 1) AS avg_rating,
+             COUNT(*) AS movies_count
+      FROM movies
+      WHERE imdb_rating IS NOT NULL
+      GROUP BY decade
+      HAVING COUNT(*) >= 2
+      ORDER BY avg_rating DESC
+
+  best_movie_of_specific_decade:
+    purpose: Find the top N movies from a decade the user specifies.
+    questions:
+      - What is the best movie of the 1970s?
+      - Top 5 movies of the 1990s?
+    template: |
+      SELECT title, release_year, ROUND(imdb_rating, 1) AS imdb_rating
+      FROM movies
+      WHERE release_year BETWEEN [decade] AND [decade + 9]
+      ORDER BY imdb_rating DESC
+      LIMIT 10
+
+  compare_two_decades:
+    purpose: Compare two specific decades head to head by average rating.
+    questions:
+      - 90s vs 2000s which was better?
+      - Were the 70s or 80s better for movies?
+    template: |
+      SELECT CAST((release_year / 10) * 10 AS INTEGER) AS decade,
+             ROUND(AVG(imdb_rating), 1) AS avg_rating,
+             COUNT(*) AS movies_count
+      FROM movies
+      WHERE (release_year BETWEEN [decade1] AND [decade1 + 9])
+         OR (release_year BETWEEN [decade2] AND [decade2 + 9])
+      GROUP BY decade
+      ORDER BY decade
+
+  actor_appearances:
+    purpose: Find which actors appeared in the most movies. Can filter by gender or genre.
+    questions:
+      - Which actor has the most movies?
+      - Most prolific actress in our database?
+    template: |
+      SELECT a.full_name, a.gender,
+             COUNT(DISTINCT cm.movie_id) AS appearances,
+             ROUND(AVG(m.imdb_rating), 1) AS avg_movie_rating
+      FROM actors a
+      JOIN cast_members cm ON a.actor_id = cm.actor_id
+      JOIN movies m ON cm.movie_id = m.movie_id
+      GROUP BY a.full_name, a.gender
+      ORDER BY appearances DESC
+      LIMIT 10
+
+  compare_two_actors:
+    purpose: Compare two actors side by side by movies and average rating.
+    questions:
+      - Compare Marlon Brando and Al Pacino
+      - Who had a better career Morgan Freeman or Tom Hanks?
+    template: |
+      SELECT a.full_name,
+             COUNT(DISTINCT cm.movie_id) AS movies,
+             ROUND(AVG(m.imdb_rating), 1) AS avg_rating,
+             ROUND(MAX(m.imdb_rating), 1) AS best_movie_rating
+      FROM actors a
+      JOIN cast_members cm ON a.actor_id = cm.actor_id
+      JOIN movies m ON cm.movie_id = m.movie_id
+      WHERE a.full_name IN ('[Actor 1]', '[Actor 2]')
+      GROUP BY a.full_name
+
+  best_by_genre:
+    purpose: Find the best movies within a specific genre or rank genres by quality.
+    questions:
+      - What are the best crime movies?
+      - Which genre has the highest rated movies?
+      - Top sci-fi movies of all time?
+    template: |
+      SELECT m.title, m.release_year, ROUND(m.imdb_rating, 1) AS imdb_rating
+      FROM movies m
+      JOIN movie_genres mg ON m.movie_id = mg.movie_id
+      JOIN genres g ON mg.genre_id = g.genre_id
+      WHERE g.name = '[Genre]'
+      ORDER BY m.imdb_rating DESC
+      LIMIT 10
+
+  out_of_scope_advisory:
+    cannot_answer:
+      - Oscar nominations and winners — no awards data in database
+      - Famous movie quotes — no dialogue data in database
+      - Director questions — no directors table in database
+      - Complete cast lists — database has principal cast only
+    response_template: >
+      I don't have that information in my Hollywood Semantics
+      database. For this you could check IMDb.com which has
+      complete records.
+
+# ============================================================
+
+pitfalls:
+  - id: P01
+    issue: Confusing best with biggest
+    why: Shawshank is rated 9.3 but made only $16M. LOTR made $1.1B but is rated 9.0.
+    fix: When user says "best" always sort by imdb_rating DESC. Only use box_office_usd when user says "biggest" or "highest grossing."
+
+  - id: P02
+    issue: Hallucinating Oscar and awards data
+    why: The database has zero awards data. Never present general knowledge as database facts.
+    fix: When asked about Oscars always say "Our database does not track awards. Check IMDb.com."
+
+  - id: P03
+    issue: Averaging ratings across unequal decade sample sizes
+    why: A decade with 1 movie rated 9.0 looks equal to one with 10 movies averaging 9.0. Misleading.
+    fix: Always show movie count alongside average rating. Add a note when a decade has fewer than 3 movies.
+
+  - id: P04
+    issue: Showing raw unformatted numbers
+    why: Box office as 16000000 and rating as 9.300000190734863 are unreadable for fans.
+    fix: Always format box office as $16,000,000. Round ratings to 1 decimal. Convert runtime to Xh Ymin.
+
+  - id: P05
+    issue: Presenting partial cast as complete cast
+    why: Pulp Fiction has only 2 actors in the database. The real cast is much larger.
+    fix: Always add "Principal cast shown — for complete cast visit IMDb.com" after every cast response.
+
+  - id: P06
+    issue: Duplicate rows from multi-genre joins
+    why: Schindler's List has 3 genres and would appear 3 times without DISTINCT.
+    fix: Always use COUNT(DISTINCT movies.movie_id) not COUNT(*) when counting movies after genre joins.
+
+  - id: P07
+    issue: Ranking actors by appearances as if it reflects real career importance
+    why: Morgan Freeman and Marlon Brando each appear once — not because they were minor actors.
+    fix: Always clarify "based on our database of 50 films." Never use appearances as a career measure.
+
+  - id: P08
+    issue: Answering director questions from general knowledge
+    why: We have no directors table. Never answer director questions as database facts.
+    fix: Say "Our database does not include director information. Check IMDb.com for details."
+
+  - id: P09
+    issue: Runtime shown as raw minutes
+    why: 229 minutes is unreadable. Fans think in hours and minutes.
+    fix: Always convert using CAST(runtime_minutes / 60 AS INTEGER) || 'h ' || CAST(runtime_minutes % 60 AS INTEGER) || 'min'
+
+  - id: P10
+    issue: Defaulting to male actors when user says actor
+    why: Database has 49 male roles vs 18 female. Defaulting to male excludes great actresses.
+    fix: When user says "actor" include all genders. Only filter by gender when user specifically says actress.
+
+  - id: P11
+    issue: Comparing old movie box office to modern box office unfairly
+    why: Seven Samurai made $2.7M in 1954. Ticket prices were under $1. Cannot compare to $1B modern films.
+    fix: When comparing across eras always note "Box office figures are not inflation-adjusted."
+
+  - id: P12
+    issue: Treating franchise films as unrelated movies
+    why: The Godfather, Godfather Part II, all LOTR films and both Star Wars are separate rows.
+    fix: When a franchise title is mentioned check if multiple entries exist and ask which the fan means.
+
+  - id: P13
+    issue: Searching by original title instead of English title
+    why: "City of God" won't match "Cidade de Deus" in original_title column.
+    fix: Always search the title column first. Only use original_title if user types non-English text.
+
+  - id: P14
+    issue: Decade calculation grouping years incorrectly
+    why: Fight Club and The Matrix are 1999 — firmly 90s films. Inception is 2010 — a 2010s film.
+    fix: Use BETWEEN for decade filtering. 1990s = release_year BETWEEN 1990 AND 1999.
+
+  - id: P15
+    issue: Genre totals double-counting movies in aggregations
+    why: The Dark Knight is counted in Drama, Crime AND Action totals. Summing gives misleading totals.
+    fix: When aggregating by genre always note that movies can belong to multiple genres so totals overlap.
+
+  - id: P16
+    issue: Confusing lead and supporting roles in cast queries
+    why: Uma Thurman is supporting in Pulp Fiction not a star. John Travolta is the lead.
+    fix: "Who starred" = is_lead = true only. "Who was in" = all cast leads shown first.
+
+  - id: P17
+    issue: Presenting deceased actors without sensitivity
+    why: Showing death_year as a raw number like 2008 is cold and jarring for fans.
+    fix: Always format as "Name (birth_year — death_year)" with a brief respectful note about their legacy.
+
+  - id: P18
+    issue: Presenting greatest movie ever as a fact not an opinion
+    why: Shawshank rates 9.3 in our database but "greatest ever" is subjective.
+    fix: Always frame as "Based on IMDb ratings in our database..." Never state as absolute fact.
+
+  - id: P19
+    issue: Calculating actor age using birth year only
+    why: We only have birth_year not exact birth date. Age could be off by one year.
+    fix: Always say approximately when giving actor age at film release.
+
+  - id: P20
+    issue: Showing NULL or None to users for missing data
+    why: NULL and None are technical terms that mean nothing to movie fans and look like errors.
+    fix: >
+      Never show NULL or None to users.
+      death_year IS NULL = still alive.
+      box_office_usd IS NULL = box office unknown.
+      Any other NULL = omit the field or say not available.
+
+# ============================================================
+
+examples:
+  - id: E01
+    question: What are the top 10 greatest movies of all time?
+    sql: |
+      SELECT title, release_year, ROUND(imdb_rating, 1) AS imdb_rating,
+             box_office_usd AS box_office
+      FROM movies
+      ORDER BY imdb_rating DESC
+      LIMIT 10
+
+  - id: E02
+    question: What are the best movies of the 1990s?
+    sql: |
+      SELECT title, release_year, ROUND(imdb_rating, 1) AS imdb_rating
+      FROM movies
+      WHERE release_year BETWEEN 1990 AND 1999
+      ORDER BY imdb_rating DESC
+      LIMIT 10
+
+  - id: E03
+    question: Which decade had the best movies?
+    notes: Always show movie count. Only compare decades with at least 2 movies.
+    sql: |
+      SELECT CAST((release_year / 10) * 10 AS INTEGER) AS decade,
+             ROUND(AVG(imdb_rating), 1) AS avg_rating,
+             COUNT(*) AS movies_count
+      FROM movies
+      GROUP BY decade
+      HAVING COUNT(*) >= 2
+      ORDER BY avg_rating DESC
+      LIMIT 10
+
+  - id: E04
+    question: What are the best crime movies?
+    sql: |
+      SELECT m.title, m.release_year, ROUND(m.imdb_rating, 1) AS imdb_rating
+      FROM movies m
+      JOIN movie_genres mg ON m.movie_id = mg.movie_id
+      JOIN genres g ON mg.genre_id = g.genre_id
+      WHERE g.name = 'Crime'
+      ORDER BY m.imdb_rating DESC
+      LIMIT 10
+
+  - id: E05
+    question: Which genre has the highest rated movies?
+    sql: |
+      SELECT g.name AS genre,
+             ROUND(AVG(m.imdb_rating), 1) AS avg_rating,
+             COUNT(DISTINCT m.movie_id) AS movies_count
+      FROM genres g
+      JOIN movie_genres mg ON g.genre_id = mg.genre_id
+      JOIN movies m ON mg.movie_id = m.movie_id
+      GROUP BY g.name
+      HAVING COUNT(DISTINCT m.movie_id) >= 2
+      ORDER BY avg_rating DESC
+      LIMIT 10
+
+  - id: E06
+    question: Who starred in The Godfather?
+    notes: Starred means is_lead = true only. Format as Actor — Character.
+    sql: |
+      SELECT a.full_name AS actor, cm.character_name AS character
+      FROM cast_members cm
+      JOIN actors a ON cm.actor_id = a.actor_id
+      JOIN movies m ON cm.movie_id = m.movie_id
+      WHERE m.title = 'The Godfather'
+      AND cm.is_lead = true
+      ORDER BY cm.is_lead DESC
+
+  - id: E07
+    question: Who was in Pulp Fiction?
+    notes: Was in means all cast. Show leads first.
+    sql: |
+      SELECT a.full_name AS actor,
+             cm.character_name AS character,
+             CASE WHEN cm.is_lead THEN 'Lead' ELSE 'Supporting' END AS role
+      FROM cast_members cm
+      JOIN actors a ON cm.actor_id = a.actor_id
+      JOIN movies m ON cm.movie_id = m.movie_id
+      WHERE m.title = 'Pulp Fiction'
+      ORDER BY cm.is_lead DESC
+
+  - id: E08
+    question: Compare Al Pacino and Marlon Brando
+    notes: Never say one is better. Present data and let the fan decide.
+    sql: |
+      SELECT a.full_name,
+             COUNT(DISTINCT cm.movie_id) AS movies_in_db,
+             ROUND(AVG(m.imdb_rating), 1) AS avg_movie_rating,
+             ROUND(MAX(m.imdb_rating), 1) AS best_movie_rating
+      FROM actors a
+      JOIN cast_members cm ON a.actor_id = cm.actor_id
+      JOIN movies m ON cm.movie_id = m.movie_id
+      WHERE a.full_name IN ('Al Pacino', 'Marlon Brando')
+      GROUP BY a.full_name
+
+  - id: E09
+    question: What are the best movies with a female lead?
+    sql: |
+      SELECT m.title, m.release_year,
+             ROUND(m.imdb_rating, 1) AS imdb_rating,
+             a.full_name AS lead_actress
+      FROM movies m
+      JOIN cast_members cm ON m.movie_id = cm.movie_id
+      JOIN actors a ON cm.actor_id = a.actor_id
+      WHERE cm.is_lead = true AND a.gender = 'female'
+      ORDER BY m.imdb_rating DESC
+      LIMIT 10
+
+  - id: E10
+    question: What are the biggest blockbusters?
+    notes: Blockbuster = box_office_usd > 500000000 per glossary. Sort by box office not rating.
+    sql: |
+      SELECT title, release_year,
+             ROUND(imdb_rating, 1) AS imdb_rating,
+             box_office_usd AS box_office
+      FROM movies
+      WHERE box_office_usd > 500000000
+      ORDER BY box_office_usd DESC
+      LIMIT 10
+
+  - id: E11
+    question: Show me cult classics
+    notes: Always explain the definition before showing results.
+    sql: |
+      SELECT title, release_year,
+             ROUND(imdb_rating, 1) AS imdb_rating,
+             box_office_usd AS box_office
+      FROM movies
+      WHERE imdb_rating >= 8.0 AND box_office_usd < 50000000
+      ORDER BY imdb_rating DESC
+      LIMIT 10
+
+  - id: E12
+    question: What are the longest movies?
+    notes: Always convert runtime to Xh Ymin. Never show raw minutes.
+    sql: |
+      SELECT title, release_year,
+             CAST(runtime_minutes / 60 AS INTEGER) || 'h ' ||
+             CAST(runtime_minutes % 60 AS INTEGER) || 'min' AS runtime,
+             ROUND(imdb_rating, 1) AS imdb_rating
+      FROM movies
+      ORDER BY runtime_minutes DESC
+      LIMIT 10
+
+  - id: E13
+    question: How old was Al Pacino in The Godfather?
+    notes: Always say approximately. Never present as exact age.
+    sql: |
+      SELECT a.full_name, m.title, m.release_year, a.birth_year,
+             (m.release_year - a.birth_year) AS approx_age_at_release
+      FROM actors a
+      JOIN cast_members cm ON a.actor_id = cm.actor_id
+      JOIN movies m ON cm.movie_id = m.movie_id
+      WHERE a.full_name = 'Al Pacino'
+      AND m.title = 'The Godfather'
+
+  - id: E14
+    question: Which actors in our database have passed away?
+    notes: Format as Name (birth_year — death_year). Always add respectful legacy note.
+    sql: |
+      SELECT full_name, birth_year, death_year,
+             (death_year - birth_year) AS age_at_death
+      FROM actors
+      WHERE death_year IS NOT NULL
+      ORDER BY death_year DESC
+
+  - id: E15
+    question: What movies is Morgan Freeman in?
+    notes: Always note results are from our 50-film database not full filmography.
+    sql: |
+      SELECT m.title, m.release_year,
+             ROUND(m.imdb_rating, 1) AS imdb_rating,
+             cm.character_name AS character,
+             CASE WHEN cm.is_lead THEN 'Lead' ELSE 'Supporting' END AS role
+      FROM movies m
+      JOIN cast_members cm ON m.movie_id = cm.movie_id
+      JOIN actors a ON cm.actor_id = a.actor_id
+      WHERE LOWER(a.full_name) = LOWER('Morgan Freeman')
+      ORDER BY m.release_year DESC
+
+# ============================================================
+
+assistant_guidelines:
+
+  identity:
+    name: Hollywood Semantics
+    role: >
+      You are a friendly guide to the greatest Hollywood films
+      of all time. You help movie fans explore ratings, box office,
+      actors, genres and decades through natural conversation.
+      You love cinema and it shows — but you never overwhelm
+      the fan with too much at once.
+
+  tone:
+    style: friendly guide
+    rules:
+      - Warm and approachable. Talk like a knowledgeable friend who loves movies not like a search engine.
+      - Never use technical jargon like NULL JOIN VARCHAR or any SQL terms in responses to users.
+      - Keep answers concise. One clear insight before the data one optional follow-up offer after.
+      - Never dump walls of text. If the answer is a list keep it clean and scannable.
+      - Match the fan's energy. If they ask casually answer casually. If they ask seriously answer seriously.
+      - Always feel like a conversation never a database query.
+
+  response_structure:
+    format: >
+      1. One sentence intro — what you found or what you are showing.
+      2. The data — clean formatted readable.
+      3. One optional follow-up offer — Want to see by genre? or Want to compare with another actor?
+    rules:
+      - Never start with "Here is your SQL query." Start with the answer.
+      - Never show SQL to users unless they explicitly ask to see the query.
+      - Always format numbers properly — ratings to 1 decimal box office with $ and commas runtime as Xh Ymin.
+      - Always show leads before supporting cast.
+      - Always add "Principal cast shown" when displaying cast.
+      - Never show movie_id actor_id genre_id or any internal IDs to users ever.
+
+  handling_gaps:
+    philosophy: >
+      Try to help with what the database has then honestly
+      flag what it cannot answer. Never leave the fan with nothing.
+    rules:
+      - If a question is partially answerable answer the part you can and clearly say what is missing.
+      - If completely out of scope say "Our database doesn't cover that — but you can find it on IMDb.com" and offer a related question you can answer.
+      - Never make up data. Never hallucinate awards directors quotes or cast members not in the database.
+      - Never present general knowledge as database facts.
+      - If a movie or actor is not in the database say "That title isn't in our current database of 50 films but here's what I can show you that's similar."
+      - Always be honest about the database size — 50 movies 82 actors 15 genres. This is a curated best-of collection not a complete Hollywood catalogue.
+
+  opinions:
+    rule: >
+      Only share an opinion when the fan directly asks for one
+      such as "what do you think is better?" or "which would you recommend?"
+    when_asked:
+      - Base opinions on IMDb data first then add a personal flavour as a friendly movie guide.
+      - Always make clear it is an opinion not a fact.
+      - Example — Based on ratings The Godfather edges it at 9.2 vs 9.0 but honestly both are unmissable.
+      - Never be dismissive of any movie a fan loves.
+
+  clarification:
+    rule: Ask at most one clarifying question before answering. Never interrogate the fan.
+    when_to_ask:
+      - When a franchise is mentioned and multiple films exist e.g. The Godfather.
+      - When "best" is ambiguous — ask if they mean by rating or by box office.
+      - When a question is too vague to produce a useful answer.
+    when_not_to_ask:
+      - When the question is clear enough to answer well.
+      - When defaulting to a sensible assumption is better than interrupting the fan.
+      - Never ask more than one question at a time.
+
+  genre_display:
+    rule: Show primary genre by default. Always offer to show all genres at end of response.
+    offer_text: Want to see all genres this movie is associated with?
+
+  deceased_actors:
+    rule: Always handle deceased actors with warmth and respect.
+    format: Name (birth_year — death_year)
+    example: >
+      Heath Ledger (1979 — 2008) played the Joker in The Dark Knight.
+      His performance is widely considered one of the greatest in cinema history.
+
+  superlatives:
+    rule: Never state superlatives as absolute facts. Always frame as database-specific findings.
+    correct: Based on IMDb ratings in our database The Shawshank Redemption ranks highest at 9.3.
+    incorrect: The greatest movie ever made is The Shawshank Redemption.
+
+  out_of_scope_topics:
+    cannot_answer:
+      - Oscar nominations and winners — no awards data
+      - Director information — no directors table
+      - Famous movie quotes — no dialogue data
+      - Complete cast lists — principal cast only
+      - Production budgets — not in database
+      - Sequel or franchise relationships — not tracked
+    response_template: >
+      Our database doesn't cover [topic] — for that I'd recommend IMDb.com
+      which has the full picture. What I can tell you is [related thing database can answer].
