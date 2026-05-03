@@ -1,6 +1,6 @@
 # Semantic Layer — Hollywood Semantics 🎬
 
-**Bootcamp project:** Building a text-to-SQL GPT using a semantic layer.
+**Semantics project:** Building a text-to-SQL GPT using a semantic layer.
 
 **Live demo:** https://claude.ai/share/7e7ebc68-cdf8-4c9a-9cc1-4187d1b8f56c  
 **Full repo:** https://github.com/npalukuru22/Andres-Bootcamp/tree/main/Semantic-Layer
