@@ -99,7 +99,7 @@ The semantic layer explicitly tells the AI what it cannot answer — Oscar data,
 
 ## How to run locally
 
-1. Clone https://github.com/npalukuru22/hollywood-semantics
+1. Clone https://github.com/npalukuru22/Andres-Bootcamp.git
 2. Open `index.html` in your browser
 3. Enter your Anthropic API key
 4. Start asking questions
